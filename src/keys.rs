@@ -104,6 +104,27 @@ impl Certificate {
     self.alt_names.serialize(&mut payload).unwrap();
     pk.verify(&payload, &self.signature)
   }
+  pub fn create(
+    pub_keys: PubKeyPair,
+    issuer: String,
+    owner: String,
+    alt_names: Vec<String>,
+    issuer_priv: SecKeyPair,
+  ) -> Self {
+    let mut payload = Vec::new();
+    pub_keys.serialize(&mut payload).unwrap();
+    issuer.serialize(&mut payload).unwrap();
+    owner.serialize(&mut payload).unwrap();
+    alt_names.serialize(&mut payload).unwrap();
+    let signature = issuer_priv.sign(payload.as_slice());
+    Self {
+      pub_keys,
+      issuer,
+      owner,
+      alt_names,
+      signature,
+    }
+  }
 }
 
 impl SigPubKey {
