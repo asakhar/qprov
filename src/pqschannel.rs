@@ -148,6 +148,11 @@ impl<Stream: Read + Write> PqsChannel<Stream> {
     }
   }
 }
+impl PqsChannel<std::net::TcpStream> {
+  pub fn set_read_timeout(&mut self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
+    self.stream.set_read_timeout(timeout)
+  }
+}
 
 impl<Stream: Read> Read for PqsChannel<Stream> {
   fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
