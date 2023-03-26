@@ -96,7 +96,7 @@ impl Certificate {
     let mut file = std::fs::File::create(p.as_ref())?;
     self.serialize(&mut file)
   }
-  pub fn verify(&self, pk: &SigPubKey) -> bool {
+  pub fn verify(&self, pk: &PubKeyPair) -> bool {
     let mut payload = Vec::new();
     self.pub_keys.serialize(&mut payload).unwrap();
     self.issuer.serialize(&mut payload).unwrap();
@@ -285,5 +285,22 @@ impl SecKeyPair {
   }
   pub fn sign(&self, message: &[u8]) -> Signature {
     self.sig_key.sign(message)
+  }
+}
+
+impl Serializable for Encapsulated {
+  fn serialize<Drain: std::io::Write>(&self, drain: &mut Drain) -> std::io::Result<()> {
+    drain.write_all(self.as_bytes())
+  }
+}
+
+impl Deserializable for Encapsulated {
+  fn deserialize<Source: std::io::Read>(source: &mut Source) -> std::io::Result<Self>
+  where
+    Self: Sized,
+  {
+    let mut buf = [0u8; Encapsulated::SIZE];
+    source.read_exact(&mut buf)?;
+    Ok(buf.into())
   }
 }
