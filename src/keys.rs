@@ -12,13 +12,13 @@ pub type SigPubKey = crate::signatures::PublicKey;
 pub type SigSecKey = crate::signatures::SecretKey;
 pub type Signature = crate::signatures::Signature;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PubKeyPair {
   pub enc_key: EncPubKey,
   pub sig_key: SigPubKey,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecKeyPair {
   pub enc_key: EncSecKey,
   pub sig_key: SigSecKey,
@@ -39,10 +39,54 @@ pub fn generate_key_pairs() -> (PubKeyPair, SecKeyPair) {
   )
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Certificate {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateRequest {
   pub pub_keys: PubKeyPair,
+  pub owner: String,
   pub contract: String,
+}
+
+impl CertificateRequest {
+  pub fn new(pub_keys: PubKeyPair, owner: impl Into<String>, contract: impl Into<String>) -> Self {
+    Self {
+      pub_keys,
+      owner: owner.into(),
+      contract: contract.into(),
+    }
+  }
+  pub fn sign(self, issuer: impl Into<String>, issuer_priv: SigSecKey) -> Certificate {
+    let contents = CertificateContents::from_request(self, issuer);
+    let payload = bincode::serialize(&contents).unwrap();
+    let signature = issuer_priv.sign(payload.as_slice());
+    Certificate {
+      contents,
+      signature,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateContents {
+  pub issuer: String,
+  pub pub_keys: PubKeyPair,
+  pub owner: String,
+  pub contract: String,
+}
+
+impl CertificateContents {
+  pub fn from_request(req: CertificateRequest, issuer: impl Into<String>) -> Self {
+    Self {
+      issuer: issuer.into(),
+      pub_keys: req.pub_keys,
+      owner: req.owner,
+      contract: req.contract,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Certificate {
+  pub contents: CertificateContents,
   pub signature: Signature,
 }
 
@@ -56,22 +100,41 @@ impl Certificate {
     bincode::serialize_into(file, self).map_err(|e| std::io::Error::new(ErrorKind::Other, e))
   }
   pub fn verify(&self, pk: &SigPubKey) -> bool {
-    let mut payload = Vec::new();
-    bincode::serialize_into(&mut payload, &self.pub_keys).unwrap();
-    bincode::serialize_into(&mut payload, &self.contract).unwrap();
+    let payload = bincode::serialize(&self.contents).unwrap();
     pk.verify(&payload, &self.signature)
   }
-  pub fn create(pub_keys: PubKeyPair, contract: impl Into<String>, issuer_priv: SigSecKey) -> Self {
-    let contract = contract.into();
-    let mut payload = Vec::new();
-    bincode::serialize_into(&mut payload, &pub_keys).unwrap();
-    bincode::serialize_into(&mut payload, &contract).unwrap();
-    let signature = issuer_priv.sign(payload.as_slice());
-    Self {
-      pub_keys,
-      contract,
-      signature,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateChain {
+  chain: Vec<Certificate>,
+}
+
+impl CertificateChain {
+  pub fn verify(
+    &self,
+    ca_cert: Certificate,
+    verificator: impl Fn(&Certificate, &Certificate) -> bool,
+  ) -> bool {
+    let Some(first) = self.chain.iter().next() else {
+      return false;
+    };
+    if !first.verify(&ca_cert.contents.pub_keys.sig_key) {
+      return false;
     }
+    for pair in self.chain.windows(2).rev() {
+      let (issuer, target) = (&pair[0], &pair[1]);
+      if !target.verify(&issuer.contents.pub_keys.sig_key) {
+        return false;
+      }
+      if !verificator(issuer, target) {
+        return false;
+      }
+    }
+    true
+  }
+  pub fn get_target(&self) -> &Certificate {
+    self.chain.last().unwrap()
   }
 }
 

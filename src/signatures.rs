@@ -1,9 +1,11 @@
 use serde::{Serialize, Deserialize};
 
 use crate::openssl_rng;
-
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicKey(Box<[u8; Self::SIZE]>);
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretKey(Box<[u8; Self::SIZE]>);
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signature(Box<[u8; Self::SIZE]>);
 
 pub fn generate_keypair() -> (PublicKey, SecretKey) {
