@@ -113,7 +113,7 @@ pub struct CertificateChain {
 impl CertificateChain {
   pub fn verify(
     &self,
-    ca_cert: Certificate,
+    ca_cert: &Certificate,
     verificator: impl Fn(&Certificate, &Certificate) -> bool,
   ) -> bool {
     let Some(first) = self.chain.iter().next() else {
