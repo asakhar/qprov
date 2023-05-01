@@ -111,6 +111,19 @@ pub struct CertificateChain {
 }
 
 impl CertificateChain {
+  pub fn root(root: Certificate) -> Option<Self> {
+    if !root.verify(&root.contents.pub_keys.sig_key) {
+      return None;
+    }
+    Some(Self { chain: vec![root] })
+  }
+  pub fn append(&mut self, child: Certificate) -> bool {
+    if !child.verify(&self.chain.last().unwrap().contents.pub_keys.sig_key) {
+      return false;
+    }
+    self.chain.push(child);
+    true
+  }
   pub fn verify(
     &self,
     ca_cert: &Certificate,
