@@ -1,4 +1,4 @@
-use std::io::ErrorKind;
+use std::{io::ErrorKind, path::Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -107,7 +107,7 @@ impl Certificate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CertificateChain {
-  chain: Vec<Certificate>,
+  pub chain: Vec<Certificate>,
 }
 
 impl CertificateChain {
@@ -146,6 +146,10 @@ impl CertificateChain {
     }
     true
   }
+  pub fn from_file(file_path: impl AsRef<Path>) -> std::io::Result<Self> {
+    let file = std::fs::File::open(file_path)?;
+    bincode::deserialize_from(file).map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))
+  }
   pub fn get_target(&self) -> &Certificate {
     self.chain.last().unwrap()
   }
@@ -161,6 +165,10 @@ impl PubKeyPair {
 }
 
 impl SecKeyPair {
+  pub fn from_file(file_path: impl AsRef<Path>) -> std::io::Result<Self> {
+    let file = std::fs::File::open(file_path)?;
+    bincode::deserialize_from(file).map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))
+  }
   pub fn decapsulate(&self, encapsulated: &Encapsulated, len: usize) -> PlainText {
     encapsulated.open(len, &self.enc_key)
   }
