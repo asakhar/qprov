@@ -1,8 +1,15 @@
-use std::{io::ErrorKind, path::Path};
+use std::{
+  io::{ErrorKind, Read, Write},
+  path::Path,
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::signatures;
+
+use crc::{Crc, CRC_32_ISCSI};
+
+pub const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 
 pub type PlainText = rmce::PlainSecret;
 pub type EncPubKey = rmce::PublicKey;
@@ -11,6 +18,84 @@ pub type Encapsulated = rmce::ShareableSecret;
 pub type SigPubKey = crate::signatures::PublicKey;
 pub type SigSecKey = crate::signatures::SecretKey;
 pub type Signature = crate::signatures::Signature;
+
+pub trait FileSerializeIdHelper {
+  fn id() -> [u8; 4];
+}
+
+impl FileSerializeIdHelper for Certificate {
+  fn id() -> [u8; 4] {
+    [1, 0, 0, 0]
+  }
+}
+impl FileSerializeIdHelper for CertificateChain {
+  fn id() -> [u8; 4] {
+    [2, 0, 0, 0]
+  }
+}
+impl FileSerializeIdHelper for CertificateRequest {
+  fn id() -> [u8; 4] {
+    [3, 0, 0, 0]
+  }
+}
+impl FileSerializeIdHelper for PubKeyPair {
+  fn id() -> [u8; 4] {
+    [4, 0, 0, 0]
+  }
+}
+impl FileSerializeIdHelper for SecKeyPair {
+  fn id() -> [u8; 4] {
+    [5, 0, 0, 0]
+  }
+}
+
+pub trait FileSerialize
+where
+  Self: 'static + Serialize + serde::de::DeserializeOwned + FileSerializeIdHelper,
+{
+  fn to_file(&self, file_path: impl AsRef<Path>) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(file_path)?;
+    let mut buffer = Vec::new();
+    buffer.extend_from_slice(&Self::id());
+    bincode::serialize_into(&mut buffer, &self)
+      .map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))?;
+    let checksum = CASTAGNOLI.checksum(&buffer);
+    file.write_all(&checksum.to_le_bytes())?;
+    file.write_all(&buffer)?;
+    Ok(())
+  }
+
+  fn from_file(file_path: impl AsRef<Path>) -> std::io::Result<Self>
+  where
+    Self: Sized,
+  {
+    let mut file = std::fs::File::open(file_path)?;
+    let mut checksum = [0u8; 4];
+    file.read_exact(&mut checksum)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let type_id = &buffer[0..4];
+    if type_id != &Self::id() {
+      return Err(std::io::Error::new(
+        ErrorKind::InvalidData,
+        "Invalid file type",
+      ));
+    }
+    let checksum_actual = CASTAGNOLI.checksum(&buffer);
+    if u32::from_le_bytes(checksum) != checksum_actual {
+      return Err(std::io::Error::new(
+        ErrorKind::InvalidData,
+        "Corrupted file",
+      ));
+    }
+    bincode::deserialize(&buffer[4..]).map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))
+  }
+}
+
+impl<T: 'static + Serialize + serde::de::DeserializeOwned + FileSerializeIdHelper> FileSerialize
+  for T
+{
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PubKeyPair {
@@ -91,14 +176,6 @@ pub struct Certificate {
 }
 
 impl Certificate {
-  pub fn from_file<P: AsRef<std::path::Path>>(p: P) -> std::io::Result<Self> {
-    let file = std::fs::File::open(p.as_ref())?;
-    bincode::deserialize_from(file).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
-  }
-  pub fn to_file<P: AsRef<std::path::Path>>(&self, p: P) -> std::io::Result<()> {
-    let file = std::fs::File::create(p.as_ref())?;
-    bincode::serialize_into(file, self).map_err(|e| std::io::Error::new(ErrorKind::Other, e))
-  }
   pub fn verify(&self, pk: &SigPubKey) -> bool {
     let payload = bincode::serialize(&self.contents).unwrap();
     pk.verify(&payload, &self.signature)
@@ -146,10 +223,6 @@ impl CertificateChain {
     }
     true
   }
-  pub fn from_file(file_path: impl AsRef<Path>) -> std::io::Result<Self> {
-    let file = std::fs::File::open(file_path)?;
-    bincode::deserialize_from(file).map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))
-  }
   pub fn get_target(&self) -> &Certificate {
     self.chain.last().unwrap()
   }
@@ -165,10 +238,6 @@ impl PubKeyPair {
 }
 
 impl SecKeyPair {
-  pub fn from_file(file_path: impl AsRef<Path>) -> std::io::Result<Self> {
-    let file = std::fs::File::open(file_path)?;
-    bincode::deserialize_from(file).map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))
-  }
   pub fn decapsulate(&self, encapsulated: &Encapsulated, len: usize) -> PlainText {
     encapsulated.open(len, &self.enc_key)
   }
