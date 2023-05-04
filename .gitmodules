@@ -1,0 +1,3 @@
+[submodule "rmce"]
+	path = rmce
+	url = git@github.com:asakhar/rmce.git
