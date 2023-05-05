@@ -18,6 +18,8 @@ pub type Encapsulated = rmce::ShareableSecret;
 pub type SigPubKey = crate::signatures::PublicKey;
 pub type SigSecKey = crate::signatures::SecretKey;
 pub type Signature = crate::signatures::Signature;
+pub type RsaPublic = crate::rsa::RsaPublic;
+pub type RsaPrivate = crate::rsa::RsaPrivate;
 
 pub trait FileSerializeIdHelper {
   fn id() -> [u8; 4];
@@ -88,7 +90,8 @@ where
         "Corrupted file",
       ));
     }
-    bincode::deserialize(&buffer[4..]).map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))
+    bincode::deserialize(&buffer[4..])
+      .map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))
   }
 }
 
@@ -97,34 +100,39 @@ impl<T: 'static + Serialize + serde::de::DeserializeOwned + FileSerializeIdHelpe
 {
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PubKeyPair {
   pub enc_key: EncPubKey,
   pub sig_key: SigPubKey,
+  pub rsa_key: RsaPublic,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecKeyPair {
   pub enc_key: EncSecKey,
   pub sig_key: SigSecKey,
+  pub rsa_key: RsaPrivate,
 }
 
 pub fn generate_key_pairs() -> (PubKeyPair, SecKeyPair) {
+  let (rsa_pub, rsa_sec) = crate::rsa::generate_keypair().unwrap();
   let (enc_pub, enc_sec) = rmce::generate_keypair();
   let (sig_pub, sig_sec) = signatures::generate_keypair();
   (
     PubKeyPair {
       enc_key: enc_pub,
       sig_key: sig_pub,
+      rsa_key: rsa_pub,
     },
     SecKeyPair {
       enc_key: enc_sec,
       sig_key: sig_sec,
+      rsa_key: rsa_sec,
     },
   )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertificateRequest {
   pub pub_keys: PubKeyPair,
   pub owner: String,
@@ -139,18 +147,18 @@ impl CertificateRequest {
       contract: contract.into(),
     }
   }
-  pub fn sign(self, issuer: impl Into<String>, issuer_priv: SigSecKey) -> Certificate {
+  pub fn sign(self, issuer: impl Into<String>, issuer_priv: SecKeyPair) -> Option<Certificate> {
     let contents = CertificateContents::from_request(self, issuer);
     let payload = bincode::serialize(&contents).unwrap();
-    let signature = issuer_priv.sign(payload.as_slice());
-    Certificate {
+    let signature = issuer_priv.sign(payload.as_slice())?;
+    Some(Certificate {
       contents,
       signature,
-    }
+    })
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertificateContents {
   pub issuer: String,
   pub pub_keys: PubKeyPair,
@@ -169,33 +177,33 @@ impl CertificateContents {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Certificate {
   pub contents: CertificateContents,
   pub signature: Signature,
 }
 
 impl Certificate {
-  pub fn verify(&self, pk: &SigPubKey) -> bool {
+  pub fn verify(&self, pk: &PubKeyPair) -> bool {
     let payload = bincode::serialize(&self.contents).unwrap();
     pk.verify(&payload, &self.signature)
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertificateChain {
   pub chain: Vec<Certificate>,
 }
 
 impl CertificateChain {
   pub fn root(root: Certificate) -> Option<Self> {
-    if !root.verify(&root.contents.pub_keys.sig_key) {
+    if !root.verify(&root.contents.pub_keys) {
       return None;
     }
     Some(Self { chain: vec![root] })
   }
   pub fn append(&mut self, child: Certificate) -> bool {
-    if !child.verify(&self.chain.last().unwrap().contents.pub_keys.sig_key) {
+    if !child.verify(&self.chain.last().unwrap().contents.pub_keys) {
       return false;
     }
     self.chain.push(child);
@@ -209,12 +217,12 @@ impl CertificateChain {
     let Some(first) = self.chain.iter().next() else {
       return false;
     };
-    if !first.verify(&ca_cert.contents.pub_keys.sig_key) {
+    if !first.verify(&ca_cert.contents.pub_keys) {
       return false;
     }
     for pair in self.chain.windows(2).rev() {
       let (issuer, target) = (&pair[0], &pair[1]);
-      if !target.verify(&issuer.contents.pub_keys.sig_key) {
+      if !target.verify(&issuer.contents.pub_keys) {
         return false;
       }
       if !verificator(issuer, target) {
@@ -229,19 +237,29 @@ impl CertificateChain {
 }
 
 impl PubKeyPair {
-  pub fn encapsulate(&self, len: usize) -> (Encapsulated, PlainText) {
-    self.enc_key.session(len)
+  pub fn encapsulate(&self, len: usize) -> Option<(Vec<u8>, PlainText)> {
+    let (encapsulated, plain) = self.enc_key.session(len);
+    let result = self.rsa_key.encrypt(encapsulated.as_bytes())?;
+    Some((result, plain))
   }
   pub fn verify(&self, message: &[u8], signature: &Signature) -> bool {
-    self.sig_key.verify(message, signature)
+    self.sig_key.verify(message, signature.pq_as_bytes())
+      && self.rsa_key.verify(message, signature.rsa_as_bytes())
   }
 }
 
 impl SecKeyPair {
-  pub fn decapsulate(&self, encapsulated: &Encapsulated, len: usize) -> PlainText {
-    encapsulated.open(len, &self.enc_key)
+  pub fn decapsulate(&self, encapsulated: &[u8], len: usize) -> Option<PlainText> {
+    let encapsulated = self.rsa_key.decrypt(encapsulated)?;
+    Some(
+      Encapsulated::try_from(encapsulated)
+        .ok()?
+        .open(len, &self.enc_key),
+    )
   }
-  pub fn sign(&self, message: &[u8]) -> Signature {
-    self.sig_key.sign(message)
+  pub fn sign(&self, message: &[u8]) -> Option<Signature> {
+    let rsa_sig = self.rsa_key.sign(message)?;
+    let pq_sig = self.sig_key.sign(message);
+    Some(Signature::from_both(pq_sig, rsa_sig))
   }
 }
