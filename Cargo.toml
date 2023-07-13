@@ -14,7 +14,7 @@ crc = "3.0.1"
 dilithium = "0.1.1"
 openssl = "0.10.52"
 rand = "0.4.6"
-rmce = { version = "0.1.0", path = "./rmce" }
+rmce = { git = "https://github.com/asakhar/rmce.git" }
 serde = { version = "1.0.160", features = ["derive"] }
 snap = "1.1.0"
 tokio = { version = "1.27.0", features = ["io-util"] }
